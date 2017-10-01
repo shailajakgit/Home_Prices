@@ -7,7 +7,6 @@ output:
   word_document: default
 ---
 
-
 ```{r setup, cache = F}
 knitr::opts_chunk$set(error = TRUE)
 suppressWarnings(library(dplyr))
