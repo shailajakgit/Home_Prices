@@ -1,6 +1,6 @@
 ---
 title: "Home_Prices4"
-author: "Shailaja_Kotagiri"
+author: "Shailaja_K"
 date: "June 16, 2017"
 output:
   pdf_document: default
@@ -10,45 +10,36 @@ output:
 
 ```{r setup, cache = F}
 knitr::opts_chunk$set(error = TRUE)
-library(dplyr)
-library(ggplot2)
-library(tidyr)
-library(rpart)
-library(rpart.plot)
-library(poLCA)
-library(AER)
-library(randomForest)
-library(caret)
-# install.packages('ALS', dependencies = T)
-library(ALS)
-library(Matrix)
+suppressWarnings(library(dplyr))
+suppressWarnings(library(ggplot2))
+suppressWarnings(library(tidyr))
+suppressWarnings(library(rpart))
+suppressWarnings(library(rpart.plot))
+suppressWarnings(library(poLCA))
+suppressWarnings(library(AER))
+suppressWarnings(library(randomForest))
+suppressWarnings(library(caret))
+suppressWarnings(library(ALS))
+suppressWarnings(library(Matrix))
 suppressWarnings(library(relaimpo))
 
 ```
 
-This R-markdown page describes my approach to predicting home prices from home features. This house prices dataset is from this (https://www.kaggle.com/c/house-prices-advanced-regression-techniques) Kaggle competition. 
 
-The objective of my analysis is to get to model building stage starting with messy data. This dataset contains 1460 rows with 1/3 of rows with missing values. Another problem with the dataset is that it has too many predictors, most of them categorical and insignificant. The focus of this analysis is to systematically reduce the number of insignificant parameters with keeping as many observations as possible within the dataset.
-
-This project is still in-progress. 
-
-
-The analysis has the following steps:
-1. Determine the distribution of the dependent variable.
-2. Cleaning the missing data as appropriate.
-3. Try out multiple predictive models.
-
-------------------------------
+--------------------------------------
 Distribution of the Dependent Variable 
-------------------------------
+--------------------------------------
 
-The dependent variable is SalePrice. Plot the histogram of SalePrice to identify the distribution.
+The dependent variable is SalePrice. Since parametric models give very good interpretation, this section contains multiple checks to see if the dependent variable fits any known theoritical distribution. log-log transformation of the response variable makes it aproximately gaussian.
+
+First, Plot the histogram of SalePrice to identify the distribution.
 
 ```{r read data}
-trainHouse <- read.csv("C:/GitHub_Local/Home_Prices/train.csv", header = T)
-testHouse <- read.csv("C:/GitHub_Local/Home_Prices/test.csv", header = T)
+trainHouse <- read.csv("./Data/train.csv", header = T)
+# testHouse <- read.csv("C:/GitHub_Local/Home_Prices/test.csv", header = T)
 
-glimpse(trainHouse)
+# Commenting out. This is line producing a long output.
+# glimpse(trainHouse)
 # summary(trainHouse)
 dim(trainHouse)
 
@@ -63,9 +54,7 @@ hist(trainHouse$SalePrice)
 The house prices are skewed to the right side. Let us try fitting a set of skewed distributions to SalePrice and 
 determine if the fit is appropriate using kolmogorov-smirnov test.
 
-1. Log-normal: Price is a real valued variable. Log-normal is a skewed distribution, typically applied to prices.
-The following function performs a 1000 ks.tests for the given data vector with the given distribution. Since the test depends on
-random number generation, the ks.tests are performed multiple times, instead of performing just once.
+1. Log-normal: Price is a real valued variable. Log-normal is a skewed distribution, typically applied to prices. The following function performs a 1000 ks.tests for the given data vector with the given distribution. Since the test depends on random number generation, the ks.tests are performed multiple times, instead of performing just once.
 ```{r Fit distributions, warning=FALSE, message=FALSE}
 set.seed(0)
 
@@ -106,7 +95,7 @@ plot(density(logSalePrice))
 QQ-plot shows that log(SalesPrice) has fatter tails compared to the normal distribution. The distribution is still skewed to the right even after taking log. 
 
 
-2. Loglog transformation: Let us try taking log twice:
+2. Loglog transformation: Applying log twice:
 ```{r log-log, warning=FALSE, message=FALSE}
 # loglog <- log(log(trainHouse$SalePrice))
 # hist(loglog)
@@ -132,7 +121,7 @@ hist(log(log(trainHouse$SalePrice)))
 
 ```
 
-Both log and loglog transformed values have almost symmetric distribution with fat tails. Let us try t-distribution.
+Both log and loglog transformed values have almost symmetric distribution with fat tails. So trying t-distribution on log and loglog transformed data might bring the distribution closer to gaussian distribution.
 
 4. t- distribution
 ```{r t- distribution, warning=FALSE, message=FALSE}
@@ -175,14 +164,12 @@ SalePrice could not fit negative binomial distribution. The system became singul
 
 ```{r gamma distribution, warning=FALSE, message=FALSE}
 set.seed(0)
-fit.pois.Params <- fitdistr(trainHouse$SalePrice, "gamma")
+fit.pois.Params <- fitdistr(trainHouse$SalePrice, "gamma",list(shape = 1, rate = 0.1), lower = 0.01)
 (fitDist1000(trainHouse$SalePrice,"rgamma",fit.pois.Params$estimate))
 
 ```
 
 Gamma distribution did not fit, either.
-
-
 
 ---------------------------------------------
 2. Cleaning the missing data as appropriate.
@@ -252,7 +239,7 @@ logtrainHouse <- logtrainHouse %>% dplyr::select(-starts_with('Garage'), GarageA
 # colnames(logtrainHouse)
 ```
 
-Imputation: Cnvert year to age. Put 999 where there is no garage. Cars = 0, remove the finish column
+Imputation: Convert year to age. Put 999 where there is no garage. Cars = 0, remove the finish column.
 
 Check the missingess of Basement related fields:
 ```{r Basement}
@@ -375,7 +362,6 @@ loglogSalePrice <- log(logSalePrice)
 fit.pois.Params <- fitdistr(loglogSalePrice, "normal")
 (fitDist1000(loglogSalePrice,"rnorm",fit.pois.Params$estimate))
 
-# colnames(logtrainHouse)
 
 ```
 Log-log transformation seems to work well even with the truncated data.
@@ -384,7 +370,7 @@ Log-log transformation seems to work well even with the truncated data.
 3. Model fitting
 --------------------------------
 
-1. GLM
+1. GLM (with gaussian family)
 
 ```{r, glm, warning=TRUE, error=TRUE}
 model2 <- glm(log(logSalePrice)~. , data = logtrainHouse)
@@ -414,7 +400,6 @@ logtrainHouse <- logtrainHouse[,-which(sapply(logtrainHouse, factorsWith1Level))
 glm with log and loglog SalePrice as response variable:
 
 
-
 ```{r compare log and loglog models}
 # Test if glm fails again by trying log model
 loglinearModel <- glm(logSalePrice~.,data = logtrainHouse)
@@ -428,168 +413,43 @@ logloglinearModel <- glm(log(logSalePrice)~.,data = logtrainHouse)
 ```
 loglog transformation of the dependent variable results in lower AIC for the given dataset. Therefore, I am pursuing loglog model further. 
 
-```{r log-log model}
+```{r log-log model,warning=TRUE,  error=TRUE}
+# ?train
+# summary(logloglinearModel)
+trCtrl <- trainControl(method = "cv", number = 10)
+# summary(lm(log(logSalePrice)~.,data = logtrainHouse))
+lm.cv <- train(log(logSalePrice)~.,
+               data = logtrainHouse,
+               method = "lm",
+               trControl = trCtrl)
 
-summary(logloglinearModel)
+lm.cv$results
+summary(lm.cv$finalModel)
 
-summary(lm(log(logSalePrice)~.,data = logtrainHouse))
-
-```
-
-GLM resulted in many insignificant parameters. Most of the categorical factors are insignificant. 
-a. Try factorizing the categorical variables using alternating least squares. This will reduce the number of variables. Since the new variables will be a linear combination of the original variables, fewer columns could represent the information in all the categorical columns.Then significant ones can be found out of those reduced number of columns.
-
-b. Use PCA for continuous variables and find signifcant factors. Use both sets of significant factors in finding the house prices.
-
-The following code does PCA on continuous variables and extracts factors.
-
-```{r, PCA-2, error=TRUE}
-# Extract continuous predictors
-factorDataCont <- logtrainHouse[,sapply(logtrainHouse,function(x){!is.factor(x)} )]
-
-# Scale them
-scaledContinuousData <- scale(factorDataCont[,-1])
-
-# Generate factors and loadings
-pcaCont <- princomp(scaledContinuousData)
-
-# Read factors into continuousFactors
-continuousFactors <- as.data.frame(pcaCont$scores)
-
-```
-
-The following code tries to reduce the categorical columns into fewer columns using alternate least squares approach.
-It does a grid search of number of factors to break the data into. It tries to break categorical values into 5 to 30 factors with an increment of 5 factors each time.
-
-In each iteration it combines the factors obtained by als method with the PCA factors and builds a linear model.
-
-Finally, the best model will be the one which results in the least cross-validated RMSE with fewer parameters.
-
-```{r, als}
-# Categorical columns
-factorData <- logtrainHouse[,sapply(logtrainHouse,is.factor)]
-dim(factorData)
-
-# Convert Categorical columns data into a data matrix
-factorData.matrix <- as.matrix(sparse.model.matrix(~.-1,factorData))
-
-diDat <- dim(factorData.matrix)
-
-
-numFactors <- seq(5, 30, by=5)
-modelResults <- data.frame(parameter=0,RMSE=0,Rsquared=0,RMSESD=0,RsquaredSD=0)
-for(i in numFactors){
-  
-  set.seed(0)
-  ## Row-wise elements with two components with random uniform priors.
-  lInitFactors <- list(cbind(sapply(c(1:i), function(x){runif(diDat[1])})))
-  
-  ## Column-wise elements 
-  SInit<-matrix(1,nrow=diDat[2],ncol=i)
-  
-  # Split the sparse matrix into factors and loadings
-  suppressMessages(  alsFactors <- als(CList=lInitFactors,
-                    S=SInit,
-                    PsiList=list(factorData.matrix)))
-
-  # Get the factors
-  requiredFactors <- alsFactors$CList[[1]]
-
-  # Combine the response variable, continuous factors and categorical factors
-  allFactorsData <- as.data.frame(cbind(logSalePrice=logtrainHouse$logSalePrice,continuousFactors, requiredFactors))
-
-  # Fit a 10-fold cv glm
-  trCtrl <- trainControl(method = "cv", number = 10)
-  model <- train(log(logSalePrice)~.,
-                 data = allFactorsData,
-                 method = "glm",
-                 trControl = trCtrl
-                 )
-  modelResults <- rbind(modelResults,model$results)
-
-}
-
-modelResults
-
-```
-
-15 categorical factors seem to result in the least RMSE. This reduces the 28 categorical variables to 15.
-
-
-The following code creates 15 factors from categorical variables, combines the categorical factors with PCA factors and fits the final linear model. 
-
-It eliminates the insignificant predictors from the final model and calculates the RMSE of the train predictions.
-```{r, Final als}
-
-set.seed(0)
-## Row-wise elements with two components with random uniform priors.
-lInitFactors <- list(cbind(sapply(c(1:15), function(x){runif(diDat[1])})))
-
-## Column-wise elements 
-SInit<-matrix(1,nrow=diDat[2],ncol=15)
-
-# Split the data matrix into factors and loadings
-alsFactors <- als(CList=lInitFactors,
-                  S=SInit,
-                  PsiList=list(factorData.matrix))
-
-# Get the factors
-requiredFactors <- alsFactors$CList[[1]]
-
-# Combine the daata
-allFactorsData <- as.data.frame(cbind(logSalePrice=logtrainHouse$logSalePrice,
-                                      continuousFactors, requiredFactors))  
-# Give appropriate column names
-colnames(allFactorsData) <- c("logSalePrice",colnames(continuousFactors),
-                              sapply(c(1:15),function(x){paste0("Fact.",x)}))
-
-# A function to recursively fit lm and eliminate insignificant predictors.
-lmWithSignificantPredictors <- function(data, significantPredictors){
-  repeat{
-    # print("iter")
-    prevNumPredictors <- length(significantPredictors)
-    model <- lm(log(logSalePrice)~. ,data = data[,c(significantPredictors,"logSalePrice")])
-    model.summary <- summary(model)
-    model.coefficients <- model.summary$coefficients
-    colnames(model.coefficients) <- c("estimate","stdError","tvalue", "pvalue" )
-    numPredictors <- dim(model.coefficients[model.coefficients[,"pvalue"]<0.05,])[1] # 265
-    significantPredictors <- (rownames(model.coefficients[model.coefficients[,"pvalue"]<=0.05,]))[-1]
-      if (sum(model.coefficients[,"pvalue"]>0.05) <=0){
-        break
-      }
-    }
-    return(model)
-  }
-  
-finalModel <- lmWithSignificantPredictors(allFactorsData,colnames(allFactorsData[,-c(1)]))
-
-lm.summary <- summary(finalModel)
-lm.coefficients <- lm.summary$coefficients
-colnames(lm.coefficients) <- c("estimate","stdError","tvalue", "pvalue" )
-
-# RMSE of the final GLM
-(GLMRMSE = (sum((finalModel$residuals)^2)/nrow(allFactorsData))^0.5)
 
 ```
 
 
-However, the glm model misses interaction terms, which can be captured by a tree based model effectively.
+
+LM resulted in many insignificant parameters, though it has 76% R-squared. Some levels of categorical factors are insignificant. We can work around this by combining the levels step by step. That requires many iterations give the large number of factors in some categorical variables.
+
+Instead, we can try a non-parametric regression that deals with this issue and handles interactions between variables as well.
 
 2. Random Forest
 Since the trees in random forest minimize the sum of squares, it is better to use the transformed variable whose distribution is closer to normal distribution.
 
 ```{r, random forest,eval=FALSE}
 # dim(logtrainHouse)
-trCtrl <- trainControl(method = "cv",number=10)
+trCtrl <- trainControl(method = "cv",number=5)
 
 # Try multiple mtry
-rf1Grid <-  expand.grid(mtry = c(20,25,30,60))
+rf1Grid <-  expand.grid(mtry = c(25,30,50))
 
 # append the cv results to the below data frame
 modelResults <- data.frame(mtry=0,RMSE=0,Rsquared=0,RMSESD=0,RsquaredSD=0)
 
 # Random forest iterations with different number of trees and mtry values
-for (i in seq(100,400,by = 50)){
+for (i in seq(100,300,by = 50)){
   rf1 <- train(log(logSalePrice)~.,
       data = logtrainHouse,
       method = "rf", 
@@ -600,44 +460,29 @@ for (i in seq(100,400,by = 50)){
   modelResults <- rbind(modelResults,rf1$results)
 }
 
+# First row contains all zeros. Removing it.
+modelResults <- modelResults[-1,]
+
+# Find the combination of variables with lowest RMSE.
+modelResults[which.min(modelResults$RMSE),]
+
 modelResults
 
-rfm <- randomForest(log(logSalePrice)~.,logtrainHouse, ntrees = 10)
-
-# head(logtrainHouse)
-rfm
-
-rfm$importance
-rfm$mse
-rfm$coefs
-summary(rfm)
-rfm$oob.times
-attributes(rfm$forest)
-rfm$oob.times
-
-?randomForest
-
 ```
 
-```{r, best forest}
 
-modelResults[which.min( (modelResults$RMSE)[-1])+1,]
+Though the best test RMSE has occured with mtry = 50 (all the variables) and number of trees = 300, a smaller model with mtry =50 and 100 trees is almost as good as the best model. The smaller model has slightly high RMSE, but it achieves this results with fewer trees.
 
-```
-
-The best test RMSE has occured with mtry = 60 (all the variables) and number of trees = 400. But it can be noted that number of trees made very little difference in reducing test RMSE, but across the iterations, mtry = 60 performed better. 
-
-
-
+In comparision with linear model, random forest performed better. RMSE of lm = 0.01798476,  whereas RMSE of random forest = 0.01217267.
 
 Fit the final random forest with the best parameters.
 
 ```{r, random forest-final}
 set.seed(0)
-randForest <- randomForest(log(logSalePrice)~.,data = logtrainHouse, mtry = 58, ntree= 400)
+randForest <- randomForest(log(logSalePrice)~.,data = logtrainHouse, mtry = 50, ntree= 100)
 
-randForest$mse
-randForest$oob.times
+# randForest$mse
+# randForest$rsq
 # randForest$forest
 
 
@@ -645,17 +490,39 @@ randForest$oob.times
 
 varImpPlot(randForest)
 
-rf2 <- randomForest(log(logSalePrice)~.,data = logtrainHouse, mtry = 6, ntree= 10)
-
-mean(rf2$rsq)
 
 ```
 
+The following partial dependece plots show the marginal impact of a predictor on the dependent variable.
+```{r, partial dependence plots}
+
+# variableImportance <- randForest$importance[order(randForest$importance,decreasing = T),]
+# sapply(names(variableImportance[1:5]), function(x) {partialPlot(randForest, logtrainHouse,x)})
+# sapply(variableImportance[1:5], function(x) {partialPlot(randForest, logtrainHouse,x)})
 
 
-Random forest and glm resulted in almost similar RMSE.
+partialPlot(randForest, logtrainHouse,OverallQual)
+partialPlot(randForest, logtrainHouse,GrLivArea)
 
-According to the random forest, Overall Quality, Size of Living Area and Nieghborhood are the most important predictors.
+partialPlot(randForest, logtrainHouse,TotalBsmtSF)
+partialPlot(randForest, logtrainHouse,Neighborhood)
+
+
+```
+
+These partial dependence plots show some interesting insights. 
+1. As the overall quality of the increases, price goes high. The effect is more dramatic for the higher quality houses (>6).
+2. Prices increase as the living area of the house inceases.
+3. Total basement square footage matters only upto a point. After 2000 sqft, it doesn't seem to affect the price much.
+4. Neighborhood shows a counter intuitive effect, though. According to the plot, neighborhood does impact the price. But in reality, house prices heavily depend on locality.
+
+
+
+
+
+
+
+
 
 
 
