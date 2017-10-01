@@ -8,3 +8,4 @@ The analysis contains the following steps:
 1. Determine the distribution of the dependent variable with and without transformations.
 2. Cleaning the missing data as appropriate.
 3. Trying out multiple predictive models, comparing them and choosing the final model.
+4. Assessing the variable impact on the predictions.
