@@ -1,0 +1,675 @@
+---
+title: "Home_Prices4"
+author: "Shailaja_Kotagiri"
+date: "June 16, 2017"
+output:
+  pdf_document: default
+  word_document: default
+---
+
+
+```{r setup, cache = F}
+knitr::opts_chunk$set(error = TRUE)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(rpart)
+library(rpart.plot)
+library(poLCA)
+library(AER)
+library(randomForest)
+library(caret)
+# install.packages('ALS', dependencies = T)
+library(ALS)
+library(Matrix)
+suppressWarnings(library(relaimpo))
+
+```
+
+This R-markdown page describes my approach to predicting home prices from home features. This house prices dataset is from this (https://www.kaggle.com/c/house-prices-advanced-regression-techniques) Kaggle competition. 
+
+The objective of my analysis is to get to model building stage starting with messy data. This dataset contains 1460 rows with 1/3 of rows with missing values. Another problem with the dataset is that it has too many predictors, most of them categorical and insignificant. The focus of this analysis is to systematically reduce the number of insignificant parameters with keeping as many observations as possible within the dataset.
+
+This project is still in-progress. 
+
+
+The analysis has the following steps:
+1. Determine the distribution of the dependent variable.
+2. Cleaning the missing data as appropriate.
+3. Try out multiple predictive models.
+
+------------------------------
+Distribution of the Dependent Variable 
+------------------------------
+
+The dependent variable is SalePrice. Plot the histogram of SalePrice to identify the distribution.
+
+```{r read data}
+trainHouse <- read.csv("C:/GitHub_Local/Home_Prices/train.csv", header = T)
+testHouse <- read.csv("C:/GitHub_Local/Home_Prices/test.csv", header = T)
+
+glimpse(trainHouse)
+# summary(trainHouse)
+dim(trainHouse)
+
+# Remove Id variable 
+trainHouse <- trainHouse[,!colnames(trainHouse) %in% c("Id")]
+dim(trainHouse)
+hist(trainHouse$SalePrice)
+```
+
+
+
+The house prices are skewed to the right side. Let us try fitting a set of skewed distributions to SalePrice and 
+determine if the fit is appropriate using kolmogorov-smirnov test.
+
+1. Log-normal: Price is a real valued variable. Log-normal is a skewed distribution, typically applied to prices.
+The following function performs a 1000 ks.tests for the given data vector with the given distribution. Since the test depends on
+random number generation, the ks.tests are performed multiple times, instead of performing just once.
+```{r Fit distributions, warning=FALSE, message=FALSE}
+set.seed(0)
+
+# 1. Log-normal
+# A function to run 1000 ks.tests.
+fitDist1000 <- function(vec,fun,params){
+  counter = 0
+  size = length(vec)
+  listofParams <- lapply(c(size,params), function(x){x})
+  for(i in c(1:1000)){
+    
+  res <- ks.test(vec, do.call(match.fun(fun),listofParams))
+  
+  if (res$p.value > 0.05){
+    counter = counter+1
+    }
+  }
+  return(counter)
+}
+
+fit.lognorm.Params <- fitdistr(trainHouse$SalePrice, "lognormal")
+(fitDist1000(trainHouse$SalePrice,"rlnorm",fit.lognorm.Params$estimate))
+
+
+```
+
+Null hypothesis of the ks.test is that the two input vectors have the same distribution. But at 95% confidence level, the
+null hypothesis is not rejected 63% times. Let us make sure visually that SalePrice distribution looks like log-normal:
+
+```{r Fit distributions-2}
+logSalePrice <- log(trainHouse$SalePrice)
+qqnorm(logSalePrice)
+qqline(logSalePrice)
+
+plot(density(logSalePrice))
+```
+
+QQ-plot shows that log(SalesPrice) has fatter tails compared to the normal distribution. The distribution is still skewed to the right even after taking log. 
+
+
+2. Loglog transformation: Let us try taking log twice:
+```{r log-log, warning=FALSE, message=FALSE}
+# loglog <- log(log(trainHouse$SalePrice))
+# hist(loglog)
+logSalePrice <- log(trainHouse$SalePrice)
+
+set.seed(0)
+fit.loglognorm.Params <- fitdistr(logSalePrice, "lognormal")
+(fitDist1000(logSalePrice,"rlnorm",fit.loglognorm.Params$estimate))
+
+qqnorm(log(logSalePrice))
+qqline(log(logSalePrice))
+plot(density(log(logSalePrice)))
+
+```
+
+Though the density plot and qqplot look similar to those of logSalePrice, loglog transformation seem to fit lognormal distribution better. ks.test could not reject the null hypothesis 74.5% of the time.
+
+
+```{r, log and log-log}
+
+hist(log(trainHouse$SalePrice))
+hist(log(log(trainHouse$SalePrice)))
+
+```
+
+Both log and loglog transformed values have almost symmetric distribution with fat tails. Let us try t-distribution.
+
+4. t- distribution
+```{r t- distribution, warning=FALSE, message=FALSE}
+set.seed(0)
+logSalePrice <- log(trainHouse$SalePrice)
+fit.pois.Params <- fitdistr(logSalePrice, "t")
+(fitDist1000(logSalePrice,"rt",(fit.pois.Params$estimate)[3]))
+
+
+set.seed(0)
+loglogSalePrice <- log(log(trainHouse$SalePrice))
+fit.pois.Params <- fitdistr(loglogSalePrice, "t")
+(fitDist1000(loglogSalePrice,"rt",(fit.pois.Params$estimate)[3]))
+
+```
+The log and log-log transformations do not fit t-distribution.
+
+3. Poisson: Even though Poisson distribution is not appropriate for real valued variables, I would like to try fitting Poisson distribution to sales price:
+
+```{r poisson distribution, warning=FALSE, message=FALSE}
+set.seed(0)
+fit.pois.Params <- fitdistr(trainHouse$SalePrice, "Poisson")
+(fitDist1000(trainHouse$SalePrice,"rpois",fit.pois.Params$estimate))
+
+```
+4. Negative binomial distribution
+
+```{r negative binomial distribution, warning=FALSE, message=FALSE, error=FALSE,cache = F}
+# set.seed(0)
+# fit.pois.Params <- fitdistr(trainHouse$SalePrice, "negative binomial")
+# (fitDist1000(trainHouse$SalePrice,"rnbinom",fit.pois.Params$estimate))
+# 
+# scaledSalePrice <- scale(trainHouse$SalePrice)
+# hist(scaledSalePrice)
+
+```
+
+SalePrice could not fit negative binomial distribution. The system became singular. Scaling the variable resulted in negative values, but negative binomial expects positive values, so can't fit negative binomial to scaled values.
+
+
+```{r gamma distribution, warning=FALSE, message=FALSE}
+set.seed(0)
+fit.pois.Params <- fitdistr(trainHouse$SalePrice, "gamma")
+(fitDist1000(trainHouse$SalePrice,"rgamma",fit.pois.Params$estimate))
+
+```
+
+Gamma distribution did not fit, either.
+
+
+
+---------------------------------------------
+2. Cleaning the missing data as appropriate.
+---------------------------------------------
+
+```{r check for missingness}
+# Data prep
+logtrainHouse <- trainHouse
+# Add logSalePrice column to the dataset
+logtrainHouse$logSalePrice <- log(trainHouse$SalePrice)
+
+# Remove SalePrice column
+logtrainHouse <- logtrainHouse[, !colnames(logtrainHouse) %in% c("SalePrice")]
+
+# Make the logSalePrice column to be the first column.
+logtrainHouse <- logtrainHouse[,c(80,c(1:79))]
+#colnames(logtrainHouse)
+
+# Count the missing values in all columns
+missingValuesinColumns <- apply(logtrainHouse,2, function(x){sum(is.na(x))})
+missingValuesinColumns[missingValuesinColumns>0]
+dim(logtrainHouse)
+
+sum(missingValuesinColumns[missingValuesinColumns>0])
+# sum(missingValuesinColumns>0)
+```
+Alley, PoolQC, Fence, MiscFeature - These variables have more than 80% values missing. Imputing them from the available
+values would be unrealistic. Therefore, deleting these columns.
+
+```{r Remove missing columns}
+logtrainHouse <- logtrainHouse[,c(c(1:6),c(8:57),c(59:72),c(76:80))]
+#colnames(logtrainHouse)[4]
+```
+Garage related fields do not seem to be missing at random. All garage related fields have (almost) equal number of values missing. Let us investigate further:
+
+```{r, garage missing}
+# colnames(logtrainHouse)
+
+# Give 1 to each cell of the df with a missing value
+missingDF <- as.data.frame(abs(is.na(logtrainHouse)))
+
+# Extract columns with missing values. sapply applies mean function to each column and returns 
+# 0 or a positive value indicating no nulls and nulls, respectively.
+onlyMissingDF <- missingDF[sapply(missingDF, mean) > 0 ] %>% dplyr::select(contains('Garage'))
+head(onlyMissingDF,2)
+
+# Check the relationship of these variables:
+cor(onlyMissingDF)
+
+head(logtrainHouse[logtrainHouse$GarageArea==0,]%>% dplyr::select(contains('Garage')),2)
+
+# a<- c(10,10,10)
+# cor(a)
+
+```
+
+The correlation value 1 shows that Garage related fields are not missing at random at all! The Garage related attributes, such as finish and yearbuilt are missing because there is no garage in these houses.
+
+But instead of removing 81 rows with missing garage related attributes,
+only the variable indicating garage presence, which has no null values - GarageArea - can be included.
+```{r Garage}
+head(logtrainHouse[is.na(logtrainHouse$GarageType),] %>% dplyr::select(contains("Garage")),2)
+
+# Exclude all garage related fileds except GarageArea
+logtrainHouse <- logtrainHouse %>% dplyr::select(-starts_with('Garage'), GarageArea)
+
+# colnames(logtrainHouse)
+```
+
+Imputation: Cnvert year to age. Put 999 where there is no garage. Cars = 0, remove the finish column
+
+Check the missingess of Basement related fields:
+```{r Basement}
+head(logtrainHouse[is.na(logtrainHouse$BsmtQual),] %>% dplyr::select(contains("Bsmt")),2)
+
+logtrainHouse <- logtrainHouse %>% dplyr::select(-starts_with('Bsmt'),BsmtFinSF1,BsmtFinSF2)
+
+# colnames(logtrainHouse)
+```
+
+
+Basement related fields are also not missing at random. Excluding all additional parameteres related to basement except BasementFinSF.
+
+
+LotForntage has 259 values missing. Investigate the nature of missingness. 
+
+```{r missing lotfrontage}
+# colnames(onlyMissingDF)
+
+# Give 1 to each cell of the df with a missing value
+missingDF <- as.data.frame(abs(is.na(logtrainHouse)))
+
+# Extract columns with missing values. sapply applies mean function to each column 
+# and returns 0 or a positive value indicating no nulls and nulls, respectively.
+onlyMissingDF <- missingDF[sapply(missingDF, mean) > 0 ]
+head(onlyMissingDF,2)
+
+# Missingmess in LotFrontage is not coinciding with missingness in any other column. 
+# This may be missing at random. Remove 259 rows from the dataset.
+cor(onlyMissingDF)
+
+# dim(logtrainHouse)
+logtrainHouse <- logtrainHouse[!is.na(logtrainHouse$LotFrontage),]
+
+```
+
+Missingness of LotFrontage does not seem to coincide with others. This could be missing at random. Therefore, removing the rows with missing values in LotFrontage column.
+
+Eventhough missingness in MasVnrArea and MasVnrType are coinciding, the number of rows with missing values are  small. Removing those rows may not impact the solution much.
+
+Check the missingness of the rest of the data frame. Since the number of rows with missing data is small, remove the rows. 
+
+```{r other missing columns-3}
+missingValuesinColumns <- apply(logtrainHouse,2, function(x){sum(is.na(x))})
+missingValuesinColumns
+
+logtrainHouse <- logtrainHouse[apply(logtrainHouse,1, function(x){sum(is.na(x))==0}),]
+# dim(logtrainHouse)
+
+# sum(is.na(logtrainHouse))
+
+```
+
+
+
+All missing values have been eliminated. 
+
+Some of the variables are 'Year' vaules, converting them to duration would be appropriate.
+
+```{r Year to age}
+
+# Replace year column with age, w.r.t 2017.
+
+yearToAge <- (logtrainHouse %>% dplyr::select(contains('Year'),YrSold) %>% 
+                mutate(BuiltBefore = (2017 - YearBuilt), 
+                       RemodBefore = (2017 - YearBuilt), 
+                       SoldBefore = (2017 - YrSold)) %>% 
+                dplyr::select(BuiltBefore, RemodBefore,SoldBefore))
+
+logtrainHouse <- logtrainHouse %>% dplyr::select(-contains('Year'))
+logtrainHouse <- logtrainHouse %>% dplyr::select(-YrSold)
+
+logtrainHouse$BuiltBefore <- yearToAge$BuiltBefore
+logtrainHouse$RemodBefore <-  yearToAge$RemodBefore
+logtrainHouse$SoldBefore <- yearToAge$SoldBefore
+logtrainHouse <- logtrainHouse[,!colnames(logtrainHouse) %in% c("MoSold")]
+
+```
+
+The above code also removes 'Month sold' column, since 'Year Sold' variable is already present in the dataset, this variable do not add much value.
+
+Let us check the distribution of the dependent variable again.
+
+
+```{r check the distribution again}
+
+hist(logtrainHouse$logSalePrice)
+hist(log(logtrainHouse$logSalePrice))
+
+```
+
+Check if the cleansed data fits t-distribution.
+```{r t-distribution cleansed data, warning=FALSE, message=FALSE}
+set.seed(0)
+logSalePrice <- logtrainHouse$logSalePrice
+fit.pois.Params <- fitdistr(logSalePrice, "t")
+(fitDist1000(logSalePrice,"rt",(fit.pois.Params$estimate)[3]))
+
+
+set.seed(0)
+loglogSalePrice <- log(logSalePrice)
+fit.pois.Params <- fitdistr(loglogSalePrice, "t")
+(fitDist1000(loglogSalePrice,"rt",(fit.pois.Params$estimate)[3]))
+
+# colnames(logtrainHouse)
+
+```
+t-distribution does not fit the data.
+
+Check again what transformation fits the response variable better with lognormal distribution.
+```{r log or loglog, warning=FALSE, message=FALSE}
+set.seed(0)
+logSalePrice <- logtrainHouse$logSalePrice
+fit.pois.Params <- fitdistr(logSalePrice, "normal")
+(fitDist1000(logSalePrice,"rnorm",fit.pois.Params$estimate))
+
+
+set.seed(0)
+loglogSalePrice <- log(logSalePrice)
+fit.pois.Params <- fitdistr(loglogSalePrice, "normal")
+(fitDist1000(loglogSalePrice,"rnorm",fit.pois.Params$estimate))
+
+# colnames(logtrainHouse)
+
+```
+Log-log transformation seems to work well even with the truncated data.
+
+--------------------------------
+3. Model fitting
+--------------------------------
+
+1. GLM
+
+```{r, glm, warning=TRUE, error=TRUE}
+model2 <- glm(log(logSalePrice)~. , data = logtrainHouse)
+
+summary(model2)
+
+```
+
+But glm is failing because 'Utilities' column is categorical and has a single level. Since all the values are the same, it doesn't explain any variance in logSalePrice column. Therefore, removing the column.
+
+```{r, remove attribute with a single level}
+factorsWith1Level <- function(x){
+  if(is.factor(x)){
+    return(length(unique(x)) == 1)
+  }
+  else{
+    return(FALSE)
+  }
+}
+
+names(which(sapply(logtrainHouse, factorsWith1Level)))
+
+logtrainHouse <- logtrainHouse[,-which(sapply(logtrainHouse, factorsWith1Level))]
+```
+
+
+glm with log and loglog SalePrice as response variable:
+
+
+
+```{r compare log and loglog models}
+# Test if glm fails again by trying log model
+loglinearModel <- glm(logSalePrice~.,data = logtrainHouse)
+
+# log-log model
+logloglinearModel <- glm(log(logSalePrice)~.,data = logtrainHouse)
+
+
+(c(logModelAIC=loglinearModel$aic, loglogModelAIC=logloglinearModel$aic))
+
+```
+loglog transformation of the dependent variable results in lower AIC for the given dataset. Therefore, I am pursuing loglog model further. 
+
+```{r log-log model}
+
+summary(logloglinearModel)
+
+summary(lm(log(logSalePrice)~.,data = logtrainHouse))
+
+```
+
+GLM resulted in many insignificant parameters. Most of the categorical factors are insignificant. 
+a. Try factorizing the categorical variables using alternating least squares. This will reduce the number of variables. Since the new variables will be a linear combination of the original variables, fewer columns could represent the information in all the categorical columns.Then significant ones can be found out of those reduced number of columns.
+
+b. Use PCA for continuous variables and find signifcant factors. Use both sets of significant factors in finding the house prices.
+
+The following code does PCA on continuous variables and extracts factors.
+
+```{r, PCA-2, error=TRUE}
+# Extract continuous predictors
+factorDataCont <- logtrainHouse[,sapply(logtrainHouse,function(x){!is.factor(x)} )]
+
+# Scale them
+scaledContinuousData <- scale(factorDataCont[,-1])
+
+# Generate factors and loadings
+pcaCont <- princomp(scaledContinuousData)
+
+# Read factors into continuousFactors
+continuousFactors <- as.data.frame(pcaCont$scores)
+
+```
+
+The following code tries to reduce the categorical columns into fewer columns using alternate least squares approach.
+It does a grid search of number of factors to break the data into. It tries to break categorical values into 5 to 30 factors with an increment of 5 factors each time.
+
+In each iteration it combines the factors obtained by als method with the PCA factors and builds a linear model.
+
+Finally, the best model will be the one which results in the least cross-validated RMSE with fewer parameters.
+
+```{r, als}
+# Categorical columns
+factorData <- logtrainHouse[,sapply(logtrainHouse,is.factor)]
+dim(factorData)
+
+# Convert Categorical columns data into a data matrix
+factorData.matrix <- as.matrix(sparse.model.matrix(~.-1,factorData))
+
+diDat <- dim(factorData.matrix)
+
+
+numFactors <- seq(5, 30, by=5)
+modelResults <- data.frame(parameter=0,RMSE=0,Rsquared=0,RMSESD=0,RsquaredSD=0)
+for(i in numFactors){
+  
+  set.seed(0)
+  ## Row-wise elements with two components with random uniform priors.
+  lInitFactors <- list(cbind(sapply(c(1:i), function(x){runif(diDat[1])})))
+  
+  ## Column-wise elements 
+  SInit<-matrix(1,nrow=diDat[2],ncol=i)
+  
+  # Split the sparse matrix into factors and loadings
+  suppressMessages(  alsFactors <- als(CList=lInitFactors,
+                    S=SInit,
+                    PsiList=list(factorData.matrix)))
+
+  # Get the factors
+  requiredFactors <- alsFactors$CList[[1]]
+
+  # Combine the response variable, continuous factors and categorical factors
+  allFactorsData <- as.data.frame(cbind(logSalePrice=logtrainHouse$logSalePrice,continuousFactors, requiredFactors))
+
+  # Fit a 10-fold cv glm
+  trCtrl <- trainControl(method = "cv", number = 10)
+  model <- train(log(logSalePrice)~.,
+                 data = allFactorsData,
+                 method = "glm",
+                 trControl = trCtrl
+                 )
+  modelResults <- rbind(modelResults,model$results)
+
+}
+
+modelResults
+
+```
+
+15 categorical factors seem to result in the least RMSE. This reduces the 28 categorical variables to 15.
+
+
+The following code creates 15 factors from categorical variables, combines the categorical factors with PCA factors and fits the final linear model. 
+
+It eliminates the insignificant predictors from the final model and calculates the RMSE of the train predictions.
+```{r, Final als}
+
+set.seed(0)
+## Row-wise elements with two components with random uniform priors.
+lInitFactors <- list(cbind(sapply(c(1:15), function(x){runif(diDat[1])})))
+
+## Column-wise elements 
+SInit<-matrix(1,nrow=diDat[2],ncol=15)
+
+# Split the data matrix into factors and loadings
+alsFactors <- als(CList=lInitFactors,
+                  S=SInit,
+                  PsiList=list(factorData.matrix))
+
+# Get the factors
+requiredFactors <- alsFactors$CList[[1]]
+
+# Combine the daata
+allFactorsData <- as.data.frame(cbind(logSalePrice=logtrainHouse$logSalePrice,
+                                      continuousFactors, requiredFactors))  
+# Give appropriate column names
+colnames(allFactorsData) <- c("logSalePrice",colnames(continuousFactors),
+                              sapply(c(1:15),function(x){paste0("Fact.",x)}))
+
+# A function to recursively fit lm and eliminate insignificant predictors.
+lmWithSignificantPredictors <- function(data, significantPredictors){
+  repeat{
+    # print("iter")
+    prevNumPredictors <- length(significantPredictors)
+    model <- lm(log(logSalePrice)~. ,data = data[,c(significantPredictors,"logSalePrice")])
+    model.summary <- summary(model)
+    model.coefficients <- model.summary$coefficients
+    colnames(model.coefficients) <- c("estimate","stdError","tvalue", "pvalue" )
+    numPredictors <- dim(model.coefficients[model.coefficients[,"pvalue"]<0.05,])[1] # 265
+    significantPredictors <- (rownames(model.coefficients[model.coefficients[,"pvalue"]<=0.05,]))[-1]
+      if (sum(model.coefficients[,"pvalue"]>0.05) <=0){
+        break
+      }
+    }
+    return(model)
+  }
+  
+finalModel <- lmWithSignificantPredictors(allFactorsData,colnames(allFactorsData[,-c(1)]))
+
+lm.summary <- summary(finalModel)
+lm.coefficients <- lm.summary$coefficients
+colnames(lm.coefficients) <- c("estimate","stdError","tvalue", "pvalue" )
+
+# RMSE of the final GLM
+(GLMRMSE = (sum((finalModel$residuals)^2)/nrow(allFactorsData))^0.5)
+
+```
+
+
+However, the glm model misses interaction terms, which can be captured by a tree based model effectively.
+
+2. Random Forest
+Since the trees in random forest minimize the sum of squares, it is better to use the transformed variable whose distribution is closer to normal distribution.
+
+```{r, random forest,eval=FALSE}
+# dim(logtrainHouse)
+trCtrl <- trainControl(method = "cv",number=10)
+
+# Try multiple mtry
+rf1Grid <-  expand.grid(mtry = c(20,25,30,60))
+
+# append the cv results to the below data frame
+modelResults <- data.frame(mtry=0,RMSE=0,Rsquared=0,RMSESD=0,RsquaredSD=0)
+
+# Random forest iterations with different number of trees and mtry values
+for (i in seq(100,400,by = 50)){
+  rf1 <- train(log(logSalePrice)~.,
+      data = logtrainHouse,
+      method = "rf", 
+      trControl = trCtrl,
+      tuneGrid = rf1Grid,
+      ntrees = i,
+      verbose = F)
+  modelResults <- rbind(modelResults,rf1$results)
+}
+
+modelResults
+
+rfm <- randomForest(log(logSalePrice)~.,logtrainHouse, ntrees = 10)
+
+# head(logtrainHouse)
+rfm
+
+rfm$importance
+rfm$mse
+rfm$coefs
+summary(rfm)
+rfm$oob.times
+attributes(rfm$forest)
+rfm$oob.times
+
+?randomForest
+
+```
+
+```{r, best forest}
+
+modelResults[which.min( (modelResults$RMSE)[-1])+1,]
+
+```
+
+The best test RMSE has occured with mtry = 60 (all the variables) and number of trees = 400. But it can be noted that number of trees made very little difference in reducing test RMSE, but across the iterations, mtry = 60 performed better. 
+
+
+
+
+Fit the final random forest with the best parameters.
+
+```{r, random forest-final}
+set.seed(0)
+randForest <- randomForest(log(logSalePrice)~.,data = logtrainHouse, mtry = 58, ntree= 400)
+
+randForest$mse
+randForest$oob.times
+# randForest$forest
+
+
+(ForestRMSE = (sum((randForest$y - randForest$predicted)^2)/nrow(logtrainHouse))^0.5)
+
+varImpPlot(randForest)
+
+rf2 <- randomForest(log(logSalePrice)~.,data = logtrainHouse, mtry = 6, ntree= 10)
+
+mean(rf2$rsq)
+
+```
+
+
+
+Random forest and glm resulted in almost similar RMSE.
+
+According to the random forest, Overall Quality, Size of Living Area and Nieghborhood are the most important predictors.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
